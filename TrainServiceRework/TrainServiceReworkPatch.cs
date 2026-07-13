@@ -1,6 +1,8 @@
 // File: TrainServiceReworkPatch.cs
 
 using HarmonyLib;
+using System;
+using System.Reflection;
 using System.Collections.Generic;
 using UnityEngine;
 using DV;
@@ -79,7 +81,7 @@ namespace TrainServiceRework
             if (car == null || car.CarDamage == null)
                 return;
 
-            Debug.Log($"[TrainServiceRework] Repair via PitStop: {changeAmount}%");
+            Main.Log($"Repair via PitStop: {changeAmount}%");
 
             car.CarDamage.RepairCarEffectivePercentage(changeAmount / 100f);
         }
@@ -96,6 +98,104 @@ namespace TrainServiceRework
                 car.CarDamage.EffectiveHealthPercentage100Notation;
         }
     }
+	
+	// =========================================================
+	// CAR BODY REPAIR PRICE FALLBACK
+	// =========================================================
+	[HarmonyPatch(
+		typeof(LocoResourceModule),
+		nameof(LocoResourceModule.UpdateResourcePricePerUnit))]
+	public static class CarBodyRepairPriceFallbackPatch
+	{
+		private const float DefaultBodyPricePerUnit = 150f;
+
+		private const float CraneBodyPricePerUnit = 850f;
+
+		private static readonly HashSet<string> loggedPriceChanges =
+			new HashSet<string>();
+
+		static void Prefix(
+			LocoResourceModule __instance,
+			TrainCar trainCar,
+			ref float newPricePerUnit)
+		{
+			if (__instance == null)
+				return;
+
+			if (__instance.resourceType != ResourceType.Car_DMG)
+				return;
+
+			if (trainCar == null || trainCar.carLivery == null)
+				return;
+
+			string liveryId =
+				trainCar.carLivery.id ?? string.Empty;
+
+			float originalPricePerUnit =
+				newPricePerUnit;
+
+			// =====================================================
+			// BREAKDOWN CRANE
+			// =====================================================
+			if (string.Equals(
+					liveryId,
+					"Crane",
+					StringComparison.OrdinalIgnoreCase))
+			{
+				newPricePerUnit =
+					CraneBodyPricePerUnit;
+
+				LogPriceChangeOnce(
+					trainCar,
+					originalPricePerUnit,
+					newPricePerUnit,
+					"CRANE OVERRIDE");
+
+				return;
+			}
+
+			// =====================================================
+			// DEFAULT FALLBACK
+			// =====================================================
+			bool invalidPrice =
+				float.IsNaN(newPricePerUnit) ||
+				float.IsInfinity(newPricePerUnit) ||
+				newPricePerUnit <= 0f;
+
+			if (!invalidPrice)
+				return;
+
+			newPricePerUnit =
+				DefaultBodyPricePerUnit;
+
+			LogPriceChangeOnce(
+				trainCar,
+				originalPricePerUnit,
+				newPricePerUnit,
+				"DEFAULT FALLBACK");
+		}
+
+		private static void LogPriceChangeOnce(
+			TrainCar trainCar,
+			float oldPricePerUnit,
+			float newPricePerUnit,
+			string reason)
+		{
+			string key =
+				$"{trainCar.CarGUID}|" +
+				$"{reason}";
+
+			if (!loggedPriceChanges.Add(key))
+				return;
+
+			Main.Log(
+				$"BODY PRICE {reason}: " +
+				$"Car={trainCar.ID} | " +
+				$"Livery={trainCar.carLivery?.id ?? "null"} | " +
+				$"UnitPrice={oldPricePerUnit} -> {newPricePerUnit} | " +
+				$"FullBodyPrice={newPricePerUnit * 100f}");
+		}
+	}
 
     // =========================================================
     // SETUP
@@ -104,19 +204,19 @@ namespace TrainServiceRework
     public static class CarRepairSetup
     {
         static void Postfix(TrainCar __instance)
-        {
-            if (__instance == null || __instance.logicCar == null)
-                return;
+		{
+			if (__instance == null || __instance.logicCar == null)
+				return;
 
-            if (__instance.CarDamage != null &&
-                __instance.GetComponent<CarPitStopParametersBase>() == null &&
-                CarTypes.IsRegularCar(__instance.carLivery))
-            {
-                var fake = __instance.gameObject.AddComponent<FakeCarPitStopParameters>();
-                fake.Init(__instance);
+			if (__instance.CarDamage != null &&
+				__instance.GetComponent<CarPitStopParametersBase>() == null &&
+				CarTypes.IsRegularCar(__instance.carLivery))
+			{
+				var fake = __instance.gameObject.AddComponent<FakeCarPitStopParameters>();
+				fake.Init(__instance);
 
-                Debug.Log($"[TrainServiceRework] Inject (CAR ONLY) -> {__instance.logicCar.ID}");
-            }
+				Main.Log($"Inject (CAR ONLY) -> {__instance.logicCar.ID}");
+			}
 
             var existing = __instance.GetComponentInChildren<CarRepairTriggerMarker>();
             if (existing != null)
@@ -173,12 +273,12 @@ namespace TrainServiceRework
             {
                 if (car.logicCar != null)
                 {
-                    bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(car); // CHANGE
+                    bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(car);
 
                     if (hasCargo)
                     {
                         blockSelf = true;
-                        Debug.Log($"[TrainServiceRework] BLOCKED (HAS CARGO) -> {car.ID}");
+                        Main.Log($"BLOCKED (HAS CARGO) -> {car.ID}");
                     }
                 }
 
@@ -187,7 +287,7 @@ namespace TrainServiceRework
                 if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, selfCategory))
                 {
                     blockSelf = true;
-                    Debug.Log($"[TrainServiceRework] BLOCKED (WRONG CATEGORY) -> {car.ID} | {selfCategory}");
+                    Main.Log($"BLOCKED (WRONG CATEGORY) -> {car.ID} | {selfCategory}");
                 }
             }
 
@@ -206,7 +306,6 @@ namespace TrainServiceRework
                     if (c == null)
                         continue;
 
-                    // Loks + Tender IMMER erlaubt
                     if (c.IsLoco || c.carType == TrainCarType.Tender)
                     {
                         c.preventService = false;
@@ -217,12 +316,12 @@ namespace TrainServiceRework
 
                     if (c.logicCar != null)
                     {
-                        bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c); // CHANGE
+                        bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c);
 
                         if (hasCargo)
                         {
                             block = true;
-                            Debug.Log($"[TrainServiceRework] BLOCKED (HAS CARGO) -> {c.ID}");
+                            Main.Log($"BLOCKED (HAS CARGO) -> {c.ID}");
                         }
                     }
 
@@ -231,12 +330,12 @@ namespace TrainServiceRework
                     if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, cat))
                     {
                         block = true;
-                        Debug.Log($"[TrainServiceRework] BLOCKED (WRONG CATEGORY) -> {c.ID} | {cat}");
+                        Main.Log($"BLOCKED (WRONG CATEGORY) -> {c.ID} | {cat}");
                     }
 
                     c.preventService = block;
 
-                    Debug.Log($"[TrainServiceRework] SET preventService -> {c.ID} = {block}");
+                    Main.Log($"SET preventService -> {c.ID} = {block}");
                 }
             }
 
@@ -247,7 +346,7 @@ namespace TrainServiceRework
             if (__instance.IsCarInPitStop())
                 return;
 
-            Debug.Log($"[TrainServiceRework] FORCE WAGON ENTRY -> {car.ID}");
+            Main.Log($"FORCE WAGON ENTRY -> {car.ID}");
 
             __instance.SendMessage("CarEnter", comp);
         }
@@ -294,7 +393,7 @@ namespace TrainServiceRework
 
             if (current == comp)
             {
-                Debug.Log($"[TrainServiceRework] FORCE WAGON EXIT -> {car.ID}");
+                Main.Log($"FORCE WAGON EXIT -> {car.ID}");
                 __instance.SendMessage("CarExit");
             }
         }
@@ -308,7 +407,6 @@ namespace TrainServiceRework
 	{
 		static System.Reflection.MethodBase TargetMethod()
 		{
-			// PRIVATE METHOD → deshalb via Reflection
 			return AccessTools.Method(typeof(PitStop), "CarEnter");
 		}
 
@@ -335,7 +433,6 @@ namespace TrainServiceRework
 				if (c == null)
 					continue;
 
-				// 🔥 LOK + TENDER IMMER DRIN LASSEN
 				if (c.IsLoco || c.carType == TrainCarType.Tender)
 					continue;
 
@@ -346,12 +443,12 @@ namespace TrainServiceRework
 				// ============================
 				if (c.logicCar != null)
 				{
-					bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c); // CHANGE
+					bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c);
 
 					if (hasCargo)
 					{
 						remove = true;
-						Debug.Log($"[TrainServiceRework] REMOVE (HAS CARGO) -> {c.ID}");
+						Main.Log($"REMOVE (HAS CARGO) -> {c.ID}");
 					}
 				}
 
@@ -363,11 +460,11 @@ namespace TrainServiceRework
 				if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, cat))
 				{
 					remove = true;
-					Debug.Log($"[TrainServiceRework] REMOVE (WRONG CATEGORY) -> {c.ID} | {cat}");
+					Main.Log($"REMOVE (WRONG CATEGORY) -> {c.ID} | {cat}");
 				}
 
 				// ============================
-				// 🔥 ENTSCHEIDENDER FIX
+				// ENTSCHEIDENDER FIX
 				// ============================
 				if (remove)
 				{
@@ -404,7 +501,7 @@ namespace TrainServiceRework
             if (car == null)
                 return;
 
-            Debug.Log($"[ExplosionFix] FULL RESET -> {car.ID}");
+            Main.Log($"[ExplosionFix] FULL RESET -> {car.ID}");
 
             // =========================
             // 1. TRAINCAR MODEL RESET
@@ -413,7 +510,6 @@ namespace TrainServiceRework
 
             if (handler != null)
             {
-                // Fix: internal state erzwingen
                 var field = AccessTools.Field(typeof(ExplosionModelHandler), "usingExplodedModel");
                 field?.SetValue(handler, true);
 
@@ -441,7 +537,6 @@ namespace TrainServiceRework
 
                 var type = comp.GetType();
 
-                // 👉 CargoReactionBase & derived classes
                 if (type.Name.Contains("CargoReaction"))
                 {
                     AccessTools.Field(type, "isExploded")?.SetValue(comp, false);
@@ -458,7 +553,7 @@ namespace TrainServiceRework
                 car.CargoDamage.currentDamageState = DamageState.WithinSafeLimits;
             }
 
-            Debug.Log($"[ExplosionFix] FULL RESET DONE -> {car.ID}");
+            Main.Log($"[ExplosionFix] FULL RESET DONE -> {car.ID}");
         }
     }
 
@@ -478,15 +573,13 @@ namespace TrainServiceRework
             if (car == null)
                 return;
 
-            // Nur wenn explodiert
             if (!car.isExploded)
                 return;
 
             float percent = __instance.EffectiveHealthPercentage100Notation;
 
-            Debug.Log($"[ExplosionFix] {car.ID} health = {percent}");
+            Main.Log($"[ExplosionFix] {car.ID} health = {percent}");
 
-            // Vollständig repariert
             if (percent >= 99.9f)
             {
                 ExplosionFullReset.ResetCar(car);
@@ -551,21 +644,19 @@ namespace TrainServiceRework
 			if (car == null || car.logicCar == null)
 				return false;
 
-			// 🔥 WICHTIG: EXPLOSION OVERRIDE
 			if (car.isExploded)
 			{
-				Debug.Log($"[CargoCheck] IGNORE (EXPLODED) -> {car.ID}");
+				Main.Log($"[CargoCheck] IGNORE (EXPLODED) -> {car.ID}");
 				return false;
 			}
 
-			// Normale Cargo Logik
 			bool hasCargo =
 				car.logicCar.CurrentCargoTypeInCar != CargoType.None &&
 				car.logicCar.LoadedCargoAmount > 0f;
 
 			if (hasCargo)
 			{
-				Debug.Log($"[CargoCheck] HAS CARGO -> {car.ID} | Amount: {car.logicCar.LoadedCargoAmount}");
+				Main.Log($"[CargoCheck] HAS CARGO -> {car.ID} | Amount: {car.logicCar.LoadedCargoAmount}");
 			}
 
 			return hasCargo;
