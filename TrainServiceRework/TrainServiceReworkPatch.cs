@@ -244,197 +244,382 @@ namespace TrainServiceRework
     }
 
     // =========================================================
-    // ENTER
+	// ENTER
+	// =========================================================
+	[HarmonyPatch(typeof(PitStop), "OnTriggerEnter")]
+	public static class PitStopCarSupport
+	{
+		static void Postfix(PitStop __instance, Collider other)
+		{
+			if (__instance == null || other == null)
+				return;
+
+			TrainCar car = TrainCar.Resolve(other.gameObject);
+
+			if (car == null)
+				return;
+
+			bool isLocomotiveOrTender =
+				CarRepairHelper.IsLocomotiveOrTender(car);
+
+			// CHANGE:
+			// Normale Wagen oder Lokomotive/Tender zulassen.
+			// Dadurch werden auch Mod-Liveries unterstützt, die von
+			// IsRegularCar nicht als regulärer Wagen erkannt werden.
+			bool isSupportedVehicle =
+				isLocomotiveOrTender ||
+				(car.carLivery != null &&
+				 CarTypes.IsRegularCar(car.carLivery));
+
+			if (!isSupportedVehicle)
+			{
+				Main.Log(
+					$"IGNORE UNSUPPORTED VEHICLE -> " +
+					$"{car.ID} | " +
+					$"Livery={car.carLivery?.id ?? "null"} | " +
+					$"Type={car.carType} | " +
+					$"IsLoco={car.IsLoco}");
+
+				return;
+			}
+
+			if (!CarRepairHelper.IsMainCarBody(other))
+				return;
+
+			Vector3 worldPitPos =
+				__instance.transform.position -
+				WorldMover.currentMove;
+
+			// =====================================================
+			// SELF CHECK
+			// =====================================================
+			bool blockSelf = false;
+
+			// CHANGE:
+			// Lokomotiven und Tender niemals durch Wagenregeln,
+			// Cargo oder Reparaturkategorien blockieren.
+			if (!isLocomotiveOrTender)
+			{
+				if (car.logicCar != null)
+				{
+					bool hasCargo =
+						CargoHelper.ShouldBlockBecauseOfCargo(car);
+
+					if (hasCargo)
+					{
+						blockSelf = true;
+
+						Main.Log(
+							$"BLOCKED (HAS CARGO) -> {car.ID}");
+					}
+				}
+
+				CarCategory selfCategory =
+					CarCategoryHelper.GetCarCategory(car);
+
+				if (!CarRepairHelper.IsCategoryAllowed(
+						worldPitPos,
+						selfCategory))
+				{
+					blockSelf = true;
+
+					Main.Log(
+						$"BLOCKED (WRONG CATEGORY) -> " +
+						$"{car.ID} | {selfCategory}");
+				}
+			}
+			else
+			{
+				// NEW:
+				// Eventuell zuvor gesetzten Blockierungsstatus löschen.
+				blockSelf = false;
+
+				Main.Log(
+					$"LOCO/TENDER SERVICE ALLOWED -> " +
+					$"{car.ID} | " +
+					$"Livery={car.carLivery?.id ?? "null"} | " +
+					$"Type={car.carType} | " +
+					$"IsLoco={car.IsLoco}");
+			}
+
+			car.preventService = blockSelf;
+
+			if (car.preventService)
+				return;
+
+			// =====================================================
+			// TRAINSET CHECK
+			// =====================================================
+			if (car.trainset != null)
+			{
+				foreach (TrainCar c in car.trainset.cars)
+				{
+					if (c == null)
+						continue;
+
+					// CHANGE:
+					// Liverybasierte Mod-Lok-/Tender-Erkennung.
+					if (CarRepairHelper.IsLocomotiveOrTender(c))
+					{
+						c.preventService = false;
+
+						Main.Log(
+							$"TRAINSET LOCO/TENDER ALLOWED -> " +
+							$"{c.ID} | " +
+							$"Livery={c.carLivery?.id ?? "null"}");
+
+						continue;
+					}
+
+					bool block = false;
+
+					if (c.logicCar != null)
+					{
+						bool hasCargo =
+							CargoHelper.ShouldBlockBecauseOfCargo(c);
+
+						if (hasCargo)
+						{
+							block = true;
+
+							Main.Log(
+								$"BLOCKED (HAS CARGO) -> {c.ID}");
+						}
+					}
+
+					CarCategory category =
+						CarCategoryHelper.GetCarCategory(c);
+
+					if (!CarRepairHelper.IsCategoryAllowed(
+							worldPitPos,
+							category))
+					{
+						block = true;
+
+						Main.Log(
+							$"BLOCKED (WRONG CATEGORY) -> " +
+							$"{c.ID} | {category}");
+					}
+
+					c.preventService = block;
+
+					Main.Log(
+						$"SET preventService -> " +
+						$"{c.ID} = {block}");
+				}
+			}
+
+			CarPitStopParametersBase comp =
+				car.GetComponent<CarPitStopParametersBase>();
+
+			// NEW: Manche Modfahrzeuge platzieren die Parameter
+			// auf einem Child-Objekt.
+			if (comp == null)
+			{
+				comp = car.GetComponentInChildren
+					<CarPitStopParametersBase>(true);
+			}
+
+			if (comp == null)
+			{
+				Main.LogWarning(
+					$"NO PITSTOP PARAMETERS -> " +
+					$"Car={car.ID} | " +
+					$"Livery={car.carLivery?.id ?? "null"} | " +
+					$"Type={car.carType} | " +
+					$"IsLoco={car.IsLoco}");
+
+				return;
+			}
+
+			if (__instance.IsCarInPitStop())
+				return;
+
+			Main.Log(
+				$"FORCE VEHICLE ENTRY -> " +
+				$"{car.ID} | " +
+				$"Params={comp.GetType().FullName}");
+
+			__instance.SendMessage("CarEnter", comp);
+		}
+	}
+
     // =========================================================
-    [HarmonyPatch(typeof(PitStop), "OnTriggerEnter")]
-    public static class PitStopCarSupport
-    {
-        static void Postfix(PitStop __instance, Collider other)
-        {
-            var car = TrainCar.Resolve(other.gameObject);
+	// EXIT
+	// =========================================================
+	[HarmonyPatch(typeof(PitStop), "OnTriggerExit")]
+	public static class PitStopCarExitSupport
+	{
+		static void Postfix(PitStop __instance, Collider other)
+		{
+			if (__instance == null || other == null)
+				return;
 
-            if (car == null)
-                return;
+			TrainCar car =
+				TrainCar.Resolve(other.gameObject);
 
-            if (!CarTypes.IsRegularCar(car.carLivery))
-                return;
+			if (car == null)
+				return;
 
-            if (!CarRepairHelper.IsMainCarBody(other))
-                return;
+			bool isSupportedVehicle =
+				CarRepairHelper.IsLocomotiveOrTender(car) ||
+				(car.carLivery != null &&
+				 CarTypes.IsRegularCar(car.carLivery));
 
-            Vector3 worldPitPos = __instance.transform.position - WorldMover.currentMove;
+			// CHANGE:
+			// Mod-Lokomotiven und Mod-Tender nicht mehr ausschließen.
+			if (!isSupportedVehicle)
+				return;
 
-            // =====================================================
-            // SELF CHECK
-            // =====================================================
-            bool blockSelf = false;
+			if (!CarRepairHelper.IsMainCarBody(other))
+				return;
 
-            if (!car.IsLoco && car.carType != TrainCarType.Tender)
-            {
-                if (car.logicCar != null)
-                {
-                    bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(car);
+			car.preventService = false;
 
-                    if (hasCargo)
-                    {
-                        blockSelf = true;
-                        Main.Log($"BLOCKED (HAS CARGO) -> {car.ID}");
-                    }
-                }
+			CarPitStopParametersBase comp =
+				car.GetComponent<CarPitStopParametersBase>();
 
-                var selfCategory = CarCategoryHelper.GetCarCategory(car);
+			// NEW:
+			// Unterstützt Parameter-Komponenten auf Child-Objekten.
+			if (comp == null)
+			{
+				comp = car.GetComponentInChildren
+					<CarPitStopParametersBase>(true);
+			}
 
-                if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, selfCategory))
-                {
-                    blockSelf = true;
-                    Main.Log($"BLOCKED (WRONG CATEGORY) -> {car.ID} | {selfCategory}");
-                }
-            }
+			if (comp == null)
+				return;
 
-            car.preventService = blockSelf;
+			CarPitStopParametersBase? current = null;
 
-            if (car.preventService)
-                return;
+			try
+			{
+				current = __instance.GetCarParameters();
+			}
+			catch (Exception ex)
+			{
+				Main.LogWarning(
+					$"PITSTOP EXIT READ FAILED -> " +
+					$"{car.ID} | {ex.Message}");
 
-            // =====================================================
-            // TRAINSET CHECK
-            // =====================================================
-            if (car.trainset != null)
-            {
-                foreach (var c in car.trainset.cars)
-                {
-                    if (c == null)
-                        continue;
+				return;
+			}
 
-                    if (c.IsLoco || c.carType == TrainCarType.Tender)
-                    {
-                        c.preventService = false;
-                        continue;
-                    }
+			if (current == null)
+				return;
 
-                    bool block = false;
+			if (current == comp)
+			{
+				Main.Log(
+					$"FORCE VEHICLE EXIT -> {car.ID}");
 
-                    if (c.logicCar != null)
-                    {
-                        bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c);
-
-                        if (hasCargo)
-                        {
-                            block = true;
-                            Main.Log($"BLOCKED (HAS CARGO) -> {c.ID}");
-                        }
-                    }
-
-                    var cat = CarCategoryHelper.GetCarCategory(c);
-
-                    if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, cat))
-                    {
-                        block = true;
-                        Main.Log($"BLOCKED (WRONG CATEGORY) -> {c.ID} | {cat}");
-                    }
-
-                    c.preventService = block;
-
-                    Main.Log($"SET preventService -> {c.ID} = {block}");
-                }
-            }
-
-            var comp = car.GetComponent<CarPitStopParametersBase>();
-            if (comp == null)
-                return;
-
-            if (__instance.IsCarInPitStop())
-                return;
-
-            Main.Log($"FORCE WAGON ENTRY -> {car.ID}");
-
-            __instance.SendMessage("CarEnter", comp);
-        }
-    }
-
-    // =========================================================
-    // EXIT
-    // =========================================================
-    [HarmonyPatch(typeof(PitStop), "OnTriggerExit")]
-    public static class PitStopCarExitSupport
-    {
-        static void Postfix(PitStop __instance, Collider other)
-        {
-            var car = TrainCar.Resolve(other.gameObject);
-
-            if (car == null)
-                return;
-
-            if (!CarTypes.IsRegularCar(car.carLivery))
-                return;
-
-            if (!CarRepairHelper.IsMainCarBody(other))
-                return;
-
-            car.preventService = false;
-
-            var comp = car.GetComponent<CarPitStopParametersBase>();
-            if (comp == null)
-                return;
-
-            CarPitStopParametersBase? current = null;
-
-            try
-            {
-                current = __instance.GetCarParameters();
-            }
-            catch
-            {
-                return;
-            }
-
-            if (current == null)
-                return;
-
-            if (current == comp)
-            {
-                Main.Log($"FORCE WAGON EXIT -> {car.ID}");
-                __instance.SendMessage("CarExit");
-            }
-        }
-    }
+				__instance.SendMessage("CarExit");
+			}
+		}
+	}
 	
 	// =========================================================
-	// FINAL FIX: SELECTOR FILTER (DO NOT REMOVE ANYTHING ELSE)
+	// FINAL FIX: SELECTOR FILTER
 	// =========================================================
 	[HarmonyPatch]
 	public static class PitStop_CarEnter_Filter
 	{
-		static System.Reflection.MethodBase TargetMethod()
+		static MethodBase TargetMethod()
 		{
-			return AccessTools.Method(typeof(PitStop), "CarEnter");
+			return AccessTools.Method(
+				typeof(PitStop),
+				"CarEnter");
 		}
 
 		static void Postfix(PitStop __instance)
 		{
+			if (__instance == null)
+				return;
+
 			if (!__instance.IsCarInPitStop())
 				return;
 
-			var carListField = AccessTools.Field(typeof(PitStop), "carList");
-			var paramsListField = AccessTools.Field(typeof(PitStop), "paramsList");
-			var indexField = AccessTools.Field(typeof(PitStop), "currentCarIndex");
+			FieldInfo carListField =
+				AccessTools.Field(
+					typeof(PitStop),
+					"carList");
 
-			var carList = carListField.GetValue(__instance) as List<TrainCar>;
-			var paramsList = paramsListField.GetValue(__instance) as List<CarPitStopParametersBase>;
+			FieldInfo paramsListField =
+				AccessTools.Field(
+					typeof(PitStop),
+					"paramsList");
+
+			FieldInfo indexField =
+				AccessTools.Field(
+					typeof(PitStop),
+					"currentCarIndex");
+
+			if (carListField == null ||
+				paramsListField == null ||
+				indexField == null)
+			{
+				Main.LogWarning(
+					"PitStop selector fields could not be found.");
+
+				return;
+			}
+
+			List<TrainCar>? carList =
+				carListField.GetValue(__instance)
+					as List<TrainCar>;
+
+			List<CarPitStopParametersBase>? paramsList =
+				paramsListField.GetValue(__instance)
+					as List<CarPitStopParametersBase>;
 
 			if (carList == null || paramsList == null)
 				return;
 
-			Vector3 worldPitPos = __instance.transform.position - WorldMover.currentMove;
+			Vector3 worldPitPos =
+				__instance.transform.position -
+				WorldMover.currentMove;
+
+			int safeCount =
+				Mathf.Min(carList.Count, paramsList.Count);
+
+			// NEW:
+			// Falls eine Fremdmod inkonsistente Listen erzeugt hat,
+			// überschüssige Einträge sicher entfernen.
+			while (carList.Count > safeCount)
+			{
+				carList.RemoveAt(carList.Count - 1);
+			}
+
+			while (paramsList.Count > safeCount)
+			{
+				paramsList.RemoveAt(paramsList.Count - 1);
+			}
 
 			for (int i = carList.Count - 1; i >= 0; i--)
 			{
-				var c = carList[i];
-				if (c == null)
-					continue;
+				TrainCar c = carList[i];
 
-				if (c.IsLoco || c.carType == TrainCarType.Tender)
+				if (c == null)
+				{
+					carList.RemoveAt(i);
+					paramsList.RemoveAt(i);
 					continue;
+				}
+
+				// CHANGE:
+				// Mod-Lokomotiven und Mod-Tender niemals durch
+				// Cargo- oder Wagenkategorie-Regeln entfernen.
+				if (CarRepairHelper.IsLocomotiveOrTender(c))
+				{
+					c.preventService = false;
+
+					Main.Log(
+						$"KEEP LOCO/TENDER IN SELECTOR -> " +
+						$"{c.ID} | " +
+						$"Livery={c.carLivery?.id ?? "null"}");
+
+					continue;
+				}
 
 				bool remove = false;
 
@@ -443,29 +628,35 @@ namespace TrainServiceRework
 				// ============================
 				if (c.logicCar != null)
 				{
-					bool hasCargo = CargoHelper.ShouldBlockBecauseOfCargo(c);
+					bool hasCargo =
+						CargoHelper.ShouldBlockBecauseOfCargo(c);
 
 					if (hasCargo)
 					{
 						remove = true;
-						Main.Log($"REMOVE (HAS CARGO) -> {c.ID}");
+
+						Main.Log(
+							$"REMOVE (HAS CARGO) -> {c.ID}");
 					}
 				}
 
 				// ============================
 				// CATEGORY CHECK
 				// ============================
-				var cat = CarCategoryHelper.GetCarCategory(c);
+				CarCategory category =
+					CarCategoryHelper.GetCarCategory(c);
 
-				if (!CarRepairHelper.IsCategoryAllowed(worldPitPos, cat))
+				if (!CarRepairHelper.IsCategoryAllowed(
+						worldPitPos,
+						category))
 				{
 					remove = true;
-					Main.Log($"REMOVE (WRONG CATEGORY) -> {c.ID} | {cat}");
+
+					Main.Log(
+						$"REMOVE (WRONG CATEGORY) -> " +
+						$"{c.ID} | {category}");
 				}
 
-				// ============================
-				// ENTSCHEIDENDER FIX
-				// ============================
 				if (remove)
 				{
 					carList.RemoveAt(i);
@@ -474,9 +665,10 @@ namespace TrainServiceRework
 			}
 
 			// ============================
-			// INDEX FIX (CRITICAL)
+			// INDEX FIX
 			// ============================
-			int index = (int)indexField.GetValue(__instance);
+			int index =
+				(int)indexField.GetValue(__instance);
 
 			if (carList.Count == 0)
 			{
@@ -484,12 +676,20 @@ namespace TrainServiceRework
 				return;
 			}
 
+			if (index < 0)
+			{
+				indexField.SetValue(__instance, 0);
+				return;
+			}
+
 			if (index >= carList.Count)
 			{
-				indexField.SetValue(__instance, carList.Count - 1);
+				indexField.SetValue(
+					__instance,
+					carList.Count - 1);
 			}
 		}
-	}	
+	}
 	
     // =========================================================
     // EXPLOSION FULL RESET (TrainCar + Cargo)
@@ -601,6 +801,26 @@ namespace TrainServiceRework
             { new Vector3(8038.7f, 131.8f, 7136.4f), new HashSet<CarCategory>{ CarCategory.Freight, CarCategory.Military } },
             { new Vector3(12890.5f, 140.2f, 11007.6f), new HashSet<CarCategory>{ CarCategory.Freight } }
         };
+		
+		public static bool IsLocomotiveOrTender(TrainCar car)
+		{
+			if (car == null)
+				return false;
+
+			if (car.IsLoco)
+				return true;
+
+			if (car.carType == TrainCarType.Tender)
+				return true;
+
+			if (car.carLivery != null &&
+				CarTypes.IsAnyLocomotiveOrTender(car.carLivery))
+			{
+				return true;
+			}
+
+			return false;
+		}
 
         public static bool IsMainCarBody(Collider col)
         {
