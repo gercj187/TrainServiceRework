@@ -36,9 +36,14 @@ namespace TrainServiceRework
                 }
 
                 Settings.Save(entry);
+				
+				TrainServiceReworkTranslations.Initialize();
 
                 harmony = new Harmony(entry.Info.Id);
-                harmony.PatchAll();
+                harmony.PatchAll();			
+				
+				// Optional Persistent Jobs compatibility.
+				PersistentJobsDamageCompatibility.TryPatch();
 
                 entry.Logger.Log("mod loaded successfully");
 
