@@ -1,6 +1,6 @@
 {
 	"Id": "TrainServiceRework",
-	"Version": "1.02.0",
+	"Version": "1.03.00",
 	"DisplayName": "TrainServiceRework",
 	"Author": "CJ187",
 	"Credits": "Coookie, NotAnOption and ChatGPT",
@@ -8,5 +8,6 @@
 	"ManagerVersion": "0.27.2",
 	"HomePage": "https://www.nexusmods.com/derailvalley/mods/1484",
 	"Repository": "https://raw.githubusercontent.com/gercj187/TrainServiceRework/refs/heads/main/repository.json",
-	"Requirements": ["DVLangHelper"]
+	"Requirements": ["DVLangHelper"],
+	"LoadAfter": ["Multiplayer"]
 }
