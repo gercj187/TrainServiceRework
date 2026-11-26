@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Optional multiplayer bridge for TrainServiceRework (AMacro dv-multiplayer, MultiplayerAPI 1.1.0.0).
+    Only loaded by TrainServiceRework.dll when the multiplayer mod is active (ImmersiveServiceMultiplayer).
+    Without multiplayer the DLL just sits unused in the mod folder.
+  -->
+  <PropertyGroup>
+    <AssemblyName>TrainServiceRework.Multiplayer</AssemblyName>
+    <RootNamespace>TrainServiceRework.Multiplayer</RootNamespace>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+
+    <!-- paths – adjust if needed -->
+    <DvManaged>S:\SteamLibrary\steamapps\common\Derail Valley\DerailValley_Data\Managed</DvManaged>
+    <!-- MultiplayerAPI.dll from the installed multiplayer mod (or Mods.inactive\Multiplayer) -->
+    <DvMultiplayer>$(DvManaged)\..\..\Mods\Multiplayer</DvMultiplayer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TrainServiceRework\TrainServiceRework.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- compile only, NOT packed: the multiplayer mod brings it itself -->
+    <Reference Include="MultiplayerAPI"><HintPath>$(DvMultiplayer)\MultiplayerAPI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(DvManaged)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="DV.ThingTypes"><HintPath>$(DvManaged)\DV.ThingTypes.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityModManager"><HintPath>$(DvManaged)\UnityModManager\UnityModManager.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(DvManaged)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(DvManaged)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- built AFTER TrainServiceRework.dll → copy both, then package (Release) -->
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="../build/" />
+
+    <Exec Condition="'$(ConfigurationName)' == 'Release' And '$(OS)' == 'Windows_NT'" Command="powershell -executionpolicy bypass -Command &quot;(../package.ps1)&quot;" />
+    <Exec Condition="'$(ConfigurationName)' == 'Release' And '$(OS)' != 'Windows_NT'" Command="pwsh -Command &quot;(../package.ps1)&quot;" />
+  </Target>
+
+</Project>
