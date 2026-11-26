@@ -115,6 +115,7 @@ New-Item -Path $ZipOutDir -ItemType Directory -Force | Out-Null
 $FilesToInclude = @(
     "build\*",
     "Audio",
+    "Licenses",
     "LICENSE"
 )
 
